@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Proxy</title>
+    <style>
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-card: #0f3460;
+            --accent: #e94560;
+            --text-primary: #eee;
+            --text-secondary: #aaa;
+            --success: #4ade80;
+            --error: #f87171;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            padding: 20px 0 30px;
+        }
+
+        header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 25px;
+        }
+
+        .btn {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--accent);
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: var(--accent);
+        }
+
+        .btn.active {
+            background: var(--accent);
+        }
+
+        .cameras-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .camera-card {
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .camera-header {
+            padding: 12px 15px;
+            background: var(--bg-card);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .camera-header h3 {
+            font-size: 1rem;
+            font-weight: 500;
+        }
+
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+
+        .status-badge.online {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--success);
+        }
+
+        .status-badge.offline {
+            background: rgba(248, 113, 113, 0.2);
+            color: var(--error);
+        }
+
+        .camera-video {
+            width: 100%;
+            height: 240px;
+            background: #000;
+            display: block;
+        }
+
+        .camera-info {
+            padding: 10px 15px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .logs {
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            padding: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .logs-header {
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 10px;
+            color: var(--text-secondary);
+        }
+
+        .logs-content {
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            max-height: 150px;
+            overflow-y: auto;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            padding: 2px 0;
+        }
+
+        .log-time {
+            color: var(--accent);
+        }
+
+        @media (max-width: 480px) {
+            .cameras-grid {
+                grid-template-columns: 1fr;
+            }
+            .camera-video {
+                height: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Camera Proxy</h1>
+            <p>Sistema de monitoreo de camaras IP</p>
+        </header>
+
+        <div class="controls">
+            <button class="btn" id="refreshBtn">Actualizar</button>
+            <button class="btn" id="autoRefreshBtn">Auto Refresh</button>
+        </div>
+
+        <div id="cameras-container" class="cameras-grid"></div>
+
+        <div class="logs">
+            <div class="logs-header">Logs</div>
+            <div class="logs-content" id="logs-content"></div>
+        </div>
+    </div>
+
+    <script>
+        const state = {
+            cameras: [],
+            autoRefresh: false,
+            refreshInterval: null,
+            ws: null
+        };
+
+        function init() {
+            loadCameras();
+            initWebSocket();
+            bindEvents();
+            log('Sistema iniciado');
+        }
+
+        function bindEvents() {
+            document.getElementById('refreshBtn').addEventListener('click', loadCameras);
+            document.getElementById('autoRefreshBtn').addEventListener('click', toggleAutoRefresh);
+        }
+
+        function initWebSocket() {
+            const wsUrl = `ws://${window.location.hostname}:8080`;
+            state.ws = new WebSocket(wsUrl);
+
+            state.ws.onopen = () => log('WebSocket conectado');
+
+            state.ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'status') {
+                    updateCameraStatuses(msg.data);
+                }
+            };
+
+            state.ws.onclose = () => {
+                log('WebSocket desconectado');
+                setTimeout(initWebSocket, 3000);
+            };
+
+            state.ws.onerror = () => log('Error en WebSocket');
+        }
+
+        function loadCameras() {
+            fetch('/api/cameras')
+                .then(res => res.json())
+                .then(cameras => {
+                    state.cameras = cameras;
+                    renderCameras(cameras);
+                    log(`${cameras.length} camaras cargadas`);
+                })
+                .catch(err => log(`Error: ${err.message}`));
+        }
+
+        function renderCameras(cameras) {
+            const container = document.getElementById('cameras-container');
+            container.innerHTML = cameras.map(cam => `
+                <div class="camera-card" data-id="${cam.id}">
+                    <div class="camera-header">
+                        <h3>${cam.name}</h3>
+                        <span class="status-badge ${cam.status}">${cam.status === 'online' ? 'En linea' : 'Offline'}</span>
+                    </div>
+                    <video class="camera-video" id="video-${cam.id}" controls autoplay muted playsinline></video>
+                    <div class="camera-info">IP: ${cam.ip}</div>
+                </div>
+            `).join('');
+
+            cameras.forEach(cam => {
+                const video = document.getElementById(`video-${cam.id}`);
+                video.src = `/stream/${cam.id}`;
+                video.onerror = () => updateStatus(cam.id, 'offline');
+                video.onloadeddata = () => updateStatus(cam.id, 'online');
+            });
+        }
+
+        function updateCameraStatuses(cameras) {
+            cameras.forEach(cam => updateStatus(cam.id, cam.status));
+        }
+
+        function updateStatus(id, status) {
+            const card = document.querySelector(`.camera-card[data-id="${id}"]`);
+            if (!card) return;
+
+            const badge = card.querySelector('.status-badge');
+            badge.className = `status-badge ${status}`;
+            badge.textContent = status === 'online' ? 'En linea' : 'Offline';
+
+            const cam = state.cameras.find(c => c.id === id);
+            if (cam) cam.status = status;
+        }
+
+        function toggleAutoRefresh() {
+            state.autoRefresh = !state.autoRefresh;
+            const btn = document.getElementById('autoRefreshBtn');
+
+            if (state.autoRefresh) {
+                btn.classList.add('active');
+                btn.textContent = 'Detener Auto';
+                state.refreshInterval = setInterval(loadCameras, 10000);
+                log('Auto refresh activado');
+            } else {
+                btn.classList.remove('active');
+                btn.textContent = 'Auto Refresh';
+                clearInterval(state.refreshInterval);
+                log('Auto refresh desactivado');
+            }
+        }
+
+        function log(message) {
+            const container = document.getElementById('logs-content');
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">[${time}]</span> ${message}`;
+            container.insertBefore(entry, container.firstChild);
+
+            while (container.children.length > 15) {
+                container.removeChild(container.lastChild);
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
